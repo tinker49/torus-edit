@@ -1,9 +1,10 @@
 use libc::{
-    tcgetattr, tcsetattr, termios as Termios, ECHO, ICANON, TCSANOW, VMIN, VTIME, STDOUT_FILENO, c_void
+    tcgetattr, tcsetattr, termios as Termios, ECHO, ICANON, TCSANOW, VMIN, VTIME, STDOUT_FILENO, c_void, ISIG , IEXTEN, ICRNL
 };
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::{mem};
+use crate::torus::input_handler;
 
 /// A guard that restores the terminal settings when dropped.
 struct RawModeGuard {
@@ -28,6 +29,9 @@ impl RawModeGuard {
         // Disable canonical mode (ICANON), echo (ECHO),
         // and various signal processing flags.
         raw_termios.c_lflag &= !(ICANON | ECHO);
+        raw_termios.c_lflag &= !(ECHO | ICANON | ISIG | IEXTEN);
+    	raw_termios.c_iflag &= !(ICRNL);
+        
         raw_termios.c_cc[VMIN] = 1; // Read returns after 1 byte
         raw_termios.c_cc[VTIME] = 0; // No timeout
 
@@ -76,17 +80,21 @@ pub fn run_app_in_raw_mode() {
 
     loop {
         if stdin.read_exact(&mut byte).is_ok() {
-            let char_byte = byte[0];
+            //let char_byte = byte[0];
+            
+            let char_byte = input_handler::process_keypress();
 
-            // Echo character back manually
-            io::stdout().write_all(&[char_byte]).unwrap();
-            io::stdout().flush().unwrap();
+			if Some(char_byte).is_some() {
+				let char_byte_val = char_byte.unwrap();
+            	// Echo character back manually
+            	io::stdout().write_all(&[char_byte_val]).unwrap();
+            	io::stdout().flush().unwrap();
 
-            if char_byte == b'q' {
-                clear_screen();
-                break; // Exits loop, guard drops, mode restored
-            }
-
+            	if char_byte_val == b'q' {
+                	clear_screen();
+                	break; // Exits loop, guard drops, mode restored
+            	}
+			}
             // Uncomment the following line to simulate a panic:
             // if char_byte == b'p' {
             //     panic!("Simulating a panic to test the Drop guard!");
