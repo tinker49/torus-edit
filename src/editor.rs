@@ -1,0 +1,393 @@
+use std::path::PathBuf;
+use crate::{
+    buffer::Buffer,
+    config::{Theme, MENU_HEIGHT, TAB_BAR_HEIGHT, STATUS_HEIGHT, GUTTER_WIDTH, SCROLL_MARGIN},
+    highlight::Highlighter,
+};
+
+// ── Cursor ────────────────────────────────────────────────────────────────────
+
+#[derive(Default, Clone, Copy)]
+pub struct Cursor {
+    /// Zero-based line index.
+    pub line:     usize,
+    /// Visual column (accounts for tab expansion in display).
+    pub col:      usize,
+    /// Character offset within the line (does not expand tabs).
+    pub char_col: usize,
+}
+
+// ── Tab ───────────────────────────────────────────────────────────────────────
+
+pub struct Tab {
+    pub buffer:      Buffer,
+    pub highlighter: Highlighter,
+    pub cursor:      Cursor,
+    /// Index of the top-visible line (vertical scroll offset).
+    pub scroll_row:  usize,
+    /// Index of the left-visible column (horizontal scroll offset).
+    pub scroll_col:  usize,
+}
+
+impl Tab {
+    pub fn new_empty() -> Self {
+        Self {
+            buffer:      Buffer::new(),
+            highlighter: Highlighter::new(),
+            cursor:      Cursor::default(),
+            scroll_row:  0,
+            scroll_col:  0,
+        }
+    }
+
+    pub fn from_buffer(mut buf: Buffer, theme: &Theme) -> Self {
+        let mut h = Highlighter::new();
+        if let Some(lang) = &buf.language.clone() {
+            h.set_language(lang);
+            h.parse(&buf.to_string(), theme);
+        }
+        Self {
+            buffer:      buf,
+            highlighter: h,
+            cursor:      Cursor::default(),
+            scroll_row:  0,
+            scroll_col:  0,
+        }
+    }
+
+    /// Re-parse syntax highlights after a buffer edit.
+    pub fn rehighlight(&mut self, theme: &Theme) {
+        let text = self.buffer.to_string();
+        self.highlighter.reparse(&text, theme);
+    }
+
+    /// Adjust `scroll_row` / `scroll_col` so the cursor is visible.
+    pub fn ensure_cursor_visible(&mut self, cols: u16, rows: u16) {
+        let view_rows = rows
+            .saturating_sub(MENU_HEIGHT + TAB_BAR_HEIGHT + STATUS_HEIGHT + 1)
+            as usize;
+        let gutter    = GUTTER_WIDTH as usize;
+        let view_cols = cols.saturating_sub(GUTTER_WIDTH + 1) as usize;
+
+        // Vertical ────────────────────────────────────────────────────────────
+        if self.cursor.line < self.scroll_row + SCROLL_MARGIN {
+            self.scroll_row = self.cursor.line.saturating_sub(SCROLL_MARGIN);
+        } else if self.cursor.line + SCROLL_MARGIN >= self.scroll_row + view_rows {
+            self.scroll_row = (self.cursor.line + SCROLL_MARGIN + 1).saturating_sub(view_rows);
+        }
+
+        // Horizontal ──────────────────────────────────────────────────────────
+        if self.cursor.col < self.scroll_col {
+            self.scroll_col = self.cursor.col;
+        } else if self.cursor.col >= self.scroll_col + view_cols {
+            self.scroll_col = self.cursor.col + 1 - view_cols;
+        }
+    }
+}
+
+// ── Editor ────────────────────────────────────────────────────────────────────
+
+pub struct Editor {
+    pub tabs:              Vec<Tab>,
+    pub active_tab:        usize,
+    pub show_line_numbers: bool,
+}
+
+impl Editor {
+    pub fn new() -> Self {
+        Self {
+            tabs:              vec![Tab::new_empty()],
+            active_tab:        0,
+            show_line_numbers: true,
+        }
+    }
+
+    // ── Tab management ────────────────────────────────────────────────────────
+
+    pub fn open_file(&mut self, path: PathBuf, theme: &Theme) -> std::io::Result<()> {
+        // Reuse existing tab if already open.
+        for (i, t) in self.tabs.iter().enumerate() {
+            if t.buffer.path.as_deref() == Some(&path) {
+                self.active_tab = i;
+                return Ok(());
+            }
+        }
+        let buf = Buffer::from_path(path)?;
+        self.tabs.push(Tab::from_buffer(buf, theme));
+        self.active_tab = self.tabs.len() - 1;
+        Ok(())
+    }
+
+    pub fn new_tab(&mut self) {
+        self.tabs.push(Tab::new_empty());
+        self.active_tab = self.tabs.len() - 1;
+    }
+
+    /// Close the active tab.  If it was the only tab, replace it with an empty one.
+    pub fn close_tab(&mut self) {
+        if self.tabs.len() == 1 {
+            self.tabs[0] = Tab::new_empty();
+            return;
+        }
+        self.tabs.remove(self.active_tab);
+        if self.active_tab >= self.tabs.len() {
+            self.active_tab = self.tabs.len() - 1;
+        }
+    }
+
+    pub fn next_tab(&mut self) {
+        if !self.tabs.is_empty() {
+            self.active_tab = (self.active_tab + 1) % self.tabs.len();
+        }
+    }
+
+    pub fn prev_tab(&mut self) {
+        if !self.tabs.is_empty() {
+            self.active_tab = if self.active_tab == 0 {
+                self.tabs.len() - 1
+            } else {
+                self.active_tab - 1
+            };
+        }
+    }
+
+    pub fn tab(&self)     -> &Tab     { &self.tabs[self.active_tab] }
+    pub fn tab_mut(&mut self) -> &mut Tab { &mut self.tabs[self.active_tab] }
+
+    // ── Editing ───────────────────────────────────────────────────────────────
+
+    pub fn insert_char(&mut self, c: char, theme: &Theme) {
+        let tab      = &mut self.tabs[self.active_tab];
+        let char_idx = tab.buffer.line_to_char(tab.cursor.line) + tab.cursor.char_col;
+
+        tab.buffer.insert_str(char_idx, &c.to_string());
+
+        if c == '\n' {
+            tab.cursor.line    += 1;
+            tab.cursor.char_col = 0;
+            tab.cursor.col      = 0;
+            tab.buffer.checkpoint();
+        } else {
+            tab.cursor.char_col += 1;
+            tab.cursor.col      += 1;
+            // Checkpoint at natural word boundaries for fine-grained undo.
+            if matches!(c, ' ' | '.' | ',' | ';' | ':' | '!' | '?' | '{' | '}' | '(' | ')') {
+                tab.buffer.checkpoint();
+            }
+        }
+
+        tab.rehighlight(theme);
+    }
+
+    pub fn backspace(&mut self, theme: &Theme) {
+        let tab      = &mut self.tabs[self.active_tab];
+        let char_idx = tab.buffer.line_to_char(tab.cursor.line) + tab.cursor.char_col;
+        if char_idx == 0 { return; }
+
+        let deleted = tab.buffer.rope.char(char_idx - 1);
+        tab.buffer.delete_range(char_idx - 1, 1);
+
+        if deleted == '\n' {
+            if tab.cursor.line > 0 {
+                tab.cursor.line    -= 1;
+                tab.cursor.char_col = tab.buffer.line_len_chars(tab.cursor.line);
+                tab.cursor.col      = tab.cursor.char_col;
+            }
+            tab.buffer.checkpoint();
+        } else {
+            tab.cursor.char_col = tab.cursor.char_col.saturating_sub(1);
+            tab.cursor.col      = tab.cursor.col.saturating_sub(1);
+        }
+
+        tab.rehighlight(theme);
+    }
+
+    pub fn delete_forward(&mut self, theme: &Theme) {
+        let tab      = &mut self.tabs[self.active_tab];
+        let char_idx = tab.buffer.line_to_char(tab.cursor.line) + tab.cursor.char_col;
+        if char_idx >= tab.buffer.len_chars() { return; }
+        tab.buffer.delete_range(char_idx, 1);
+        tab.rehighlight(theme);
+    }
+
+    // ── Cursor movement ───────────────────────────────────────────────────────
+
+    pub fn move_cursor(&mut self, dir: Direction, cols: u16, rows: u16) {
+        let tab = &mut self.tabs[self.active_tab];
+        let buf = &tab.buffer;
+
+        match dir {
+            Direction::Left => {
+                if tab.cursor.char_col > 0 {
+                    tab.cursor.char_col -= 1;
+                    tab.cursor.col       = tab.cursor.char_col;
+                } else if tab.cursor.line > 0 {
+                    tab.cursor.line    -= 1;
+                    let len             = buf.line_len_chars(tab.cursor.line);
+                    tab.cursor.char_col = len;
+                    tab.cursor.col      = len;
+                }
+            }
+            Direction::Right => {
+                let len = buf.line_len_chars(tab.cursor.line);
+                if tab.cursor.char_col < len {
+                    tab.cursor.char_col += 1;
+                    tab.cursor.col       = tab.cursor.char_col;
+                } else if tab.cursor.line + 1 < buf.len_lines() {
+                    tab.cursor.line    += 1;
+                    tab.cursor.char_col = 0;
+                    tab.cursor.col      = 0;
+                }
+            }
+            Direction::Up => {
+                if tab.cursor.line > 0 {
+                    tab.cursor.line    -= 1;
+                    let len             = buf.line_len_chars(tab.cursor.line);
+                    tab.cursor.char_col = tab.cursor.col.min(len);
+                }
+            }
+            Direction::Down => {
+                let nlines = buf.len_lines();
+                if tab.cursor.line + 1 < nlines {
+                    tab.cursor.line    += 1;
+                    let len             = buf.line_len_chars(tab.cursor.line);
+                    tab.cursor.char_col = tab.cursor.col.min(len);
+                }
+            }
+            Direction::Home => {
+                // Jump to first non-whitespace, then to column 0 on second press
+                let line = buf.rope.line(tab.cursor.line).to_string();
+                let first_non_ws = line.chars().take_while(|c| c.is_whitespace() && *c != '\n').count();
+                if tab.cursor.char_col != first_non_ws {
+                    tab.cursor.char_col = first_non_ws;
+                } else {
+                    tab.cursor.char_col = 0;
+                }
+                tab.cursor.col = tab.cursor.char_col;
+            }
+            Direction::End => {
+                let len             = buf.line_len_chars(tab.cursor.line);
+                tab.cursor.char_col = len;
+                tab.cursor.col      = len;
+            }
+            Direction::PageUp => {
+                let view = rows.saturating_sub(MENU_HEIGHT + TAB_BAR_HEIGHT + STATUS_HEIGHT + 1) as usize;
+                tab.cursor.line    = tab.cursor.line.saturating_sub(view);
+                let len             = buf.line_len_chars(tab.cursor.line);
+                tab.cursor.char_col = tab.cursor.col.min(len);
+            }
+            Direction::PageDown => {
+                let view   = rows.saturating_sub(MENU_HEIGHT + TAB_BAR_HEIGHT + STATUS_HEIGHT + 1) as usize;
+                let max    = buf.len_lines().saturating_sub(1);
+                tab.cursor.line    = (tab.cursor.line + view).min(max);
+                let len             = buf.line_len_chars(tab.cursor.line);
+                tab.cursor.char_col = tab.cursor.col.min(len);
+            }
+            Direction::WordLeft => {
+                let abs = buf.line_to_char(tab.cursor.line) + tab.cursor.char_col;
+                let new = word_boundary_left(&buf.rope, abs);
+                let line = buf.char_to_line(new);
+                let col  = new - buf.line_to_char(line);
+                tab.cursor.line     = line;
+                tab.cursor.char_col = col;
+                tab.cursor.col      = col;
+            }
+            Direction::WordRight => {
+                let abs  = buf.line_to_char(tab.cursor.line) + tab.cursor.char_col;
+                let new  = word_boundary_right(&buf.rope, abs);
+                let capped = new.min(buf.len_chars().saturating_sub(1));
+                let line = buf.char_to_line(capped);
+                let col  = capped - buf.line_to_char(line);
+                tab.cursor.line     = line;
+                tab.cursor.char_col = col;
+                tab.cursor.col      = col;
+            }
+        }
+
+        tab.ensure_cursor_visible(cols, rows);
+    }
+
+    // ── Undo / Redo ───────────────────────────────────────────────────────────
+
+    pub fn undo(&mut self, theme: &Theme) {
+        let tab = &mut self.tabs[self.active_tab];
+        if let Some(pos) = tab.buffer.undo() {
+            jump_to_char(tab, pos);
+        }
+        self.tabs[self.active_tab].rehighlight(theme);
+    }
+
+    pub fn redo(&mut self, theme: &Theme) {
+        let tab = &mut self.tabs[self.active_tab];
+        if let Some(pos) = tab.buffer.redo() {
+            jump_to_char(tab, pos);
+        }
+        self.tabs[self.active_tab].rehighlight(theme);
+    }
+
+    // ── Go to line ────────────────────────────────────────────────────────────
+
+    pub fn go_to_line(&mut self, one_based: usize, cols: u16, rows: u16) {
+        let tab = &mut self.tabs[self.active_tab];
+        let max = tab.buffer.len_lines().saturating_sub(1);
+        tab.cursor.line     = one_based.saturating_sub(1).min(max);
+        tab.cursor.char_col = 0;
+        tab.cursor.col      = 0;
+        tab.ensure_cursor_visible(cols, rows);
+    }
+}
+
+// ── Direction ─────────────────────────────────────────────────────────────────
+
+pub enum Direction {
+    Left, Right, Up, Down,
+    Home, End,
+    PageUp, PageDown,
+    WordLeft, WordRight,
+}
+
+// ── Internal helpers ──────────────────────────────────────────────────────────
+
+fn jump_to_char(tab: &mut Tab, pos: usize) {
+    let max  = tab.buffer.len_chars().saturating_sub(1);
+    let pos  = pos.min(max);
+    let line = tab.buffer.char_to_line(pos);
+    let col  = pos - tab.buffer.line_to_char(line);
+    tab.cursor.line     = line;
+    tab.cursor.char_col = col;
+    tab.cursor.col      = col;
+}
+
+fn is_word_char(c: char) -> bool { c.is_alphanumeric() || c == '_' }
+
+fn word_boundary_left(rope: &ropey::Rope, char_idx: usize) -> usize {
+    if char_idx == 0 { return 0; }
+    let mut i = char_idx - 1;
+    // Skip whitespace to the left.
+    while i > 0 && rope.char(i).is_whitespace() { i -= 1; }
+    let pivot = rope.char(i);
+    if is_word_char(pivot) {
+        while i > 0 && is_word_char(rope.char(i - 1)) { i -= 1; }
+    } else {
+        while i > 0 && !rope.char(i - 1).is_whitespace() && !is_word_char(rope.char(i - 1)) {
+            i -= 1;
+        }
+    }
+    i
+}
+
+fn word_boundary_right(rope: &ropey::Rope, char_idx: usize) -> usize {
+    let len = rope.len_chars();
+    if char_idx >= len { return len; }
+    let mut i = char_idx;
+    // Skip whitespace to the right.
+    while i < len && rope.char(i).is_whitespace() { i += 1; }
+    if i < len && is_word_char(rope.char(i)) {
+        while i < len && is_word_char(rope.char(i)) { i += 1; }
+    } else {
+        while i < len && !rope.char(i).is_whitespace() && !is_word_char(rope.char(i)) {
+            i += 1;
+        }
+    }
+    i
+}
