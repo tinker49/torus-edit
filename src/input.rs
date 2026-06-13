@@ -304,6 +304,201 @@ fn jump_to_current_match(app: &mut App) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    use crate::{app::App, menu::MenuAction, renderer::Renderer};
+
+    fn make_app() -> App {
+        App::new(Renderer { width: 80, height: 24 })
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    // ── handle_event ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_handle_event_resize_updates_renderer() {
+        let mut app = make_app();
+        handle_event(Event::Resize(120, 40), &mut app);
+        assert_eq!(app.renderer.width, 120);
+        assert_eq!(app.renderer.height, 40);
+    }
+
+    // ── handle_key ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_handle_key_char_inserts_into_buffer() {
+        let mut app = make_app();
+        handle_key(key(KeyCode::Char('a')), &mut app);
+        assert_eq!(app.editor.tab().buffer.to_string(), "a");
+    }
+
+    #[test]
+    fn test_handle_key_ctrl_q_returns_quit() {
+        let mut app = make_app();
+        let cmd = handle_key(ctrl(KeyCode::Char('q')), &mut app);
+        assert!(matches!(cmd, Some(AppCommand::Quit)));
+    }
+
+    #[test]
+    fn test_handle_key_ctrl_n_opens_new_tab() {
+        let mut app = make_app();
+        handle_key(ctrl(KeyCode::Char('n')), &mut app);
+        assert_eq!(app.editor.tabs.len(), 2);
+    }
+
+    #[test]
+    fn test_handle_key_ctrl_g_activates_goto() {
+        let mut app = make_app();
+        handle_key(ctrl(KeyCode::Char('g')), &mut app);
+        assert!(app.goto_active);
+    }
+
+    #[test]
+    fn test_handle_key_ctrl_f_opens_search() {
+        let mut app = make_app();
+        handle_key(ctrl(KeyCode::Char('f')), &mut app);
+        assert!(app.search.active);
+    }
+
+    #[test]
+    fn test_handle_key_esc_clears_status() {
+        let mut app = make_app();
+        app.set_status("some message");
+        handle_key(key(KeyCode::Esc), &mut app);
+        assert!(app.status_msg.is_empty());
+    }
+
+    // ── handle_menu_key ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_handle_menu_key_esc_closes_menu() {
+        let mut app = make_app();
+        app.menu.open_by_key('f');
+        assert!(app.menu.is_open());
+        handle_menu_key(key(KeyCode::Esc), &mut app);
+        assert!(!app.menu.is_open());
+    }
+
+    // ── handle_search_key ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_handle_search_key_esc_closes_search() {
+        let mut app = make_app();
+        app.search.open();
+        handle_search_key(key(KeyCode::Esc), &mut app);
+        assert!(!app.search.active);
+    }
+
+    #[test]
+    fn test_handle_search_key_char_appends_to_query() {
+        let mut app = make_app();
+        app.search.open();
+        handle_search_key(key(KeyCode::Char('x')), &mut app);
+        assert_eq!(app.search.query, "x");
+    }
+
+    // ── handle_goto_key ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_handle_goto_key_digit_appends_to_input() {
+        let mut app = make_app();
+        app.goto_active = true;
+        handle_goto_key(key(KeyCode::Char('5')), &mut app);
+        assert_eq!(app.goto_input, "5");
+    }
+
+    #[test]
+    fn test_handle_goto_key_enter_navigates_and_clears() {
+        let mut app = make_app();
+        let t = app.theme.clone();
+        for c in "line1\nline2\nline3".chars() { app.editor.insert_char(c, &t); }
+        app.goto_active = true;
+        app.goto_input = "2".to_string();
+        handle_goto_key(key(KeyCode::Enter), &mut app);
+        assert!(!app.goto_active);
+        assert_eq!(app.editor.tab().cursor.line, 1);
+    }
+
+    // ── dispatch_action ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_dispatch_action_new_file_opens_tab() {
+        let mut app = make_app();
+        dispatch_action(MenuAction::NewFile, &mut app);
+        assert_eq!(app.editor.tabs.len(), 2);
+    }
+
+    #[test]
+    fn test_dispatch_action_quit_returns_quit_command() {
+        let mut app = make_app();
+        let cmd = dispatch_action(MenuAction::Quit, &mut app);
+        assert!(matches!(cmd, Some(AppCommand::Quit)));
+    }
+
+    #[test]
+    fn test_dispatch_action_toggle_line_numbers() {
+        let mut app = make_app();
+        assert!(app.editor.show_line_numbers);
+        dispatch_action(MenuAction::ToggleLineNumbers, &mut app);
+        assert!(!app.editor.show_line_numbers);
+    }
+
+    // ── jump_to_current_match ────────────────────────────────────────────────
+
+    #[test]
+    fn test_jump_to_current_match_moves_cursor() {
+        let mut app = make_app();
+        let t = app.theme.clone();
+        for c in "hello world".chars() { app.editor.insert_char(c, &t); }
+        app.search.open();
+        app.search.query = "world".to_string();
+        let text = app.editor.tab().buffer.to_string();
+        app.search.update_matches(&text);
+        jump_to_current_match(&mut app);
+        // "world" starts at char index 6
+        assert_eq!(app.editor.tab().cursor.char_col, 6);
+    }
+
+    // ── perform_replace ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_perform_replace_single_replaces_current_match() {
+        let mut app = make_app();
+        let t = app.theme.clone();
+        for c in "hello world".chars() { app.editor.insert_char(c, &t); }
+        app.search.open_replace();
+        app.search.query        = "world".to_string();
+        app.search.replace_text = "there".to_string();
+        let text = app.editor.tab().buffer.to_string();
+        app.search.update_matches(&text);
+        perform_replace(&mut app, false);
+        assert_eq!(app.editor.tab().buffer.to_string(), "hello there");
+    }
+
+    #[test]
+    fn test_perform_replace_all_replaces_every_occurrence() {
+        let mut app = make_app();
+        let t = app.theme.clone();
+        for c in "aaa".chars() { app.editor.insert_char(c, &t); }
+        app.search.open_replace();
+        app.search.query        = "a".to_string();
+        app.search.replace_text = "b".to_string();
+        let text = app.editor.tab().buffer.to_string();
+        app.search.update_matches(&text);
+        perform_replace(&mut app, true);
+        assert_eq!(app.editor.tab().buffer.to_string(), "bbb");
+    }
+}
+
 fn perform_replace(app: &mut App, replace_all: bool) {
     let query   = app.search.query.clone();
     let replace = app.search.replace_text.clone();

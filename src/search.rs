@@ -1,5 +1,5 @@
 /// Which text field in the search bar has keyboard focus.
-#[derive(Default, PartialEq, Clone, Copy)]
+#[derive(Default, PartialEq, Clone, Copy, Debug)]
 pub enum SearchFocus {
     #[default]
     Query,
@@ -98,5 +98,135 @@ impl SearchState {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state_with_matches(query: &str, text: &str) -> SearchState {
+        let mut s = SearchState::default();
+        s.open();
+        s.query = query.to_string();
+        s.update_matches(text);
+        s
+    }
+
+    #[test]
+    fn test_open_activates_find_mode() {
+        let mut s = SearchState::default();
+        s.open();
+        assert!(s.active);
+        assert!(!s.replace_mode);
+        assert_eq!(s.focus, SearchFocus::Query);
+        assert_eq!(s.current_match, 0);
+    }
+
+    #[test]
+    fn test_open_replace_activates_replace_mode() {
+        let mut s = SearchState::default();
+        s.open_replace();
+        assert!(s.active);
+        assert!(s.replace_mode);
+        assert_eq!(s.focus, SearchFocus::Query);
+    }
+
+    #[test]
+    fn test_close_deactivates_and_clears_matches() {
+        let mut s = state_with_matches("hi", "hi there hi");
+        s.close();
+        assert!(!s.active);
+        assert!(s.matches.is_empty());
+        assert_eq!(s.current_match, 0);
+    }
+
+    #[test]
+    fn test_update_matches_finds_all_occurrences() {
+        let mut s = SearchState::default();
+        s.query = "ab".to_string();
+        s.update_matches("ab cd ab ef ab");
+        assert_eq!(s.matches.len(), 3);
+    }
+
+    #[test]
+    fn test_update_matches_is_case_insensitive() {
+        let mut s = SearchState::default();
+        s.query = "hello".to_string();
+        s.update_matches("Hello HELLO hello");
+        assert_eq!(s.matches.len(), 3);
+    }
+
+    #[test]
+    fn test_update_matches_empty_query_produces_no_matches() {
+        let mut s = SearchState::default();
+        s.query = String::new();
+        s.update_matches("some text");
+        assert!(s.matches.is_empty());
+    }
+
+    #[test]
+    fn test_update_matches_non_overlapping() {
+        let mut s = SearchState::default();
+        s.query = "aa".to_string();
+        s.update_matches("aaaa"); // "aa" at 0..2, then "aa" at 2..4 (non-overlapping)
+        assert_eq!(s.matches.len(), 2);
+        assert_eq!(s.matches[0], (0, 2));
+        assert_eq!(s.matches[1], (2, 4));
+    }
+
+    #[test]
+    fn test_next_match_advances_index() {
+        let mut s = state_with_matches("x", "x y x y x");
+        assert_eq!(s.current_match, 0);
+        s.next_match();
+        assert_eq!(s.current_match, 1);
+    }
+
+    #[test]
+    fn test_next_match_wraps_to_first() {
+        let mut s = state_with_matches("x", "x y x");
+        s.current_match = 1;
+        s.next_match();
+        assert_eq!(s.current_match, 0);
+    }
+
+    #[test]
+    fn test_prev_match_decrements_index() {
+        let mut s = state_with_matches("x", "x y x y x");
+        s.current_match = 2;
+        s.prev_match();
+        assert_eq!(s.current_match, 1);
+    }
+
+    #[test]
+    fn test_prev_match_wraps_to_last() {
+        let mut s = state_with_matches("x", "x y x");
+        s.current_match = 0;
+        s.prev_match();
+        assert_eq!(s.current_match, 1);
+    }
+
+    #[test]
+    fn test_match_at_returns_some_inside_match() {
+        let s = state_with_matches("hi", "say hi now");
+        // "hi" starts at char 4
+        assert!(s.match_at(4).is_some());
+        assert!(s.match_at(5).is_some());
+    }
+
+    #[test]
+    fn test_match_at_returns_none_outside_match() {
+        let s = state_with_matches("hi", "say hi now");
+        assert!(s.match_at(0).is_none());
+        assert!(s.match_at(6).is_none());
+    }
+
+    #[test]
+    fn test_match_at_distinguishes_current_match() {
+        let mut s = state_with_matches("x", "x y x");
+        s.current_match = 0;
+        assert_eq!(s.match_at(0), Some(true));  // current
+        assert_eq!(s.match_at(4), Some(false)); // non-current
     }
 }

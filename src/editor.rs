@@ -358,6 +358,215 @@ fn jump_to_char(tab: &mut Tab, pos: usize) {
     tab.cursor.col      = col;
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Theme;
+
+    fn theme() -> Theme { Theme::default() }
+
+    fn editor_with_text(text: &str) -> Editor {
+        let mut ed = Editor::new();
+        let t = theme();
+        for c in text.chars() {
+            ed.insert_char(c, &t);
+        }
+        ed
+    }
+
+    // ── Tab ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_tab_new_empty() {
+        let tab = Tab::new_empty();
+        assert_eq!(tab.buffer.len_chars(), 0);
+        assert_eq!(tab.cursor.line, 0);
+        assert_eq!(tab.cursor.char_col, 0);
+        assert_eq!(tab.scroll_row, 0);
+    }
+
+    #[test]
+    fn test_tab_from_buffer() {
+        let buf = Buffer::from_path(PathBuf::from("Cargo.toml")).unwrap();
+        let tab = Tab::from_buffer(buf, &theme());
+        assert!(tab.buffer.len_chars() > 0);
+        assert_eq!(tab.cursor.line, 0);
+    }
+
+    #[test]
+    fn test_tab_rehighlight_does_not_panic() {
+        let mut tab = Tab::new_empty();
+        tab.buffer.insert_str(0, "fn main() {}");
+        tab.rehighlight(&theme()); // just verify no panic
+    }
+
+    #[test]
+    fn test_tab_ensure_cursor_visible_scrolls_down() {
+        let mut tab = Tab::new_empty();
+        // Insert enough lines so cursor.line=25 is valid.
+        for _ in 0..30 {
+            tab.buffer.insert_str(tab.buffer.len_chars(), "line\n");
+        }
+        tab.cursor.line = 25;
+        tab.ensure_cursor_visible(80, 24);
+        assert!(tab.scroll_row > 0, "scroll_row should advance when cursor is below viewport");
+    }
+
+    // ── Editor ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_editor_new() {
+        let ed = Editor::new();
+        assert_eq!(ed.tabs.len(), 1);
+        assert_eq!(ed.active_tab, 0);
+        assert!(ed.show_line_numbers);
+    }
+
+    #[test]
+    fn test_editor_open_file() {
+        let mut ed = Editor::new();
+        ed.open_file(PathBuf::from("Cargo.toml"), &theme()).unwrap();
+        assert_eq!(ed.tabs.len(), 2);
+        assert_eq!(ed.active_tab, 1);
+    }
+
+    #[test]
+    fn test_editor_open_file_reuses_existing_tab() {
+        let mut ed = Editor::new();
+        ed.open_file(PathBuf::from("Cargo.toml"), &theme()).unwrap();
+        let tabs_after_first = ed.tabs.len();
+        ed.open_file(PathBuf::from("Cargo.toml"), &theme()).unwrap();
+        assert_eq!(ed.tabs.len(), tabs_after_first, "should not open a duplicate tab");
+    }
+
+    #[test]
+    fn test_editor_new_tab() {
+        let mut ed = Editor::new();
+        ed.new_tab();
+        assert_eq!(ed.tabs.len(), 2);
+        assert_eq!(ed.active_tab, 1);
+    }
+
+    #[test]
+    fn test_editor_close_tab_reduces_count() {
+        let mut ed = Editor::new();
+        ed.new_tab();
+        assert_eq!(ed.tabs.len(), 2);
+        ed.close_tab();
+        assert_eq!(ed.tabs.len(), 1);
+    }
+
+    #[test]
+    fn test_editor_close_last_tab_resets_to_empty() {
+        let mut ed = editor_with_text("hello");
+        assert_eq!(ed.tabs.len(), 1);
+        ed.close_tab();
+        assert_eq!(ed.tabs.len(), 1);
+        assert_eq!(ed.tab().buffer.len_chars(), 0);
+    }
+
+    #[test]
+    fn test_editor_next_tab_wraps() {
+        let mut ed = Editor::new();
+        ed.new_tab();
+        ed.active_tab = 0;
+        ed.next_tab();
+        assert_eq!(ed.active_tab, 1);
+        ed.next_tab();
+        assert_eq!(ed.active_tab, 0, "should wrap back to 0");
+    }
+
+    #[test]
+    fn test_editor_prev_tab_wraps() {
+        let mut ed = Editor::new();
+        ed.new_tab();
+        ed.active_tab = 0;
+        ed.prev_tab();
+        assert_eq!(ed.active_tab, 1, "should wrap to last tab");
+    }
+
+    #[test]
+    fn test_editor_tab_returns_active() {
+        let mut ed = Editor::new();
+        ed.new_tab();
+        ed.active_tab = 1;
+        ed.tab_mut().buffer.insert_str(0, "hello");
+        assert_eq!(ed.tab().buffer.to_string(), "hello");
+    }
+
+    #[test]
+    fn test_editor_tab_mut_mutates_active() {
+        let mut ed = Editor::new();
+        ed.tab_mut().buffer.insert_str(0, "x");
+        assert_eq!(ed.tabs[0].buffer.to_string(), "x");
+    }
+
+    #[test]
+    fn test_editor_insert_char_updates_buffer_and_cursor() {
+        let mut ed = Editor::new();
+        ed.insert_char('a', &theme());
+        assert_eq!(ed.tab().buffer.to_string(), "a");
+        assert_eq!(ed.tab().cursor.char_col, 1);
+    }
+
+    #[test]
+    fn test_editor_insert_newline_advances_line() {
+        let mut ed = editor_with_text("ab");
+        ed.insert_char('\n', &theme());
+        assert_eq!(ed.tab().cursor.line, 1);
+        assert_eq!(ed.tab().cursor.char_col, 0);
+    }
+
+    #[test]
+    fn test_editor_backspace_removes_char() {
+        let mut ed = editor_with_text("ab");
+        ed.backspace(&theme());
+        assert_eq!(ed.tab().buffer.to_string(), "a");
+        assert_eq!(ed.tab().cursor.char_col, 1);
+    }
+
+    #[test]
+    fn test_editor_delete_forward_removes_char_at_cursor() {
+        let mut ed = editor_with_text("ab");
+        ed.tab_mut().cursor.char_col = 0;
+        ed.tab_mut().cursor.col = 0;
+        ed.delete_forward(&theme());
+        assert_eq!(ed.tab().buffer.to_string(), "b");
+    }
+
+    #[test]
+    fn test_editor_move_cursor_right() {
+        let mut ed = editor_with_text("abc");
+        ed.tab_mut().cursor.char_col = 0;
+        ed.tab_mut().cursor.col = 0;
+        ed.move_cursor(Direction::Right, 80, 24);
+        assert_eq!(ed.tab().cursor.char_col, 1);
+    }
+
+    #[test]
+    fn test_editor_undo_reverts_insert() {
+        let mut ed = editor_with_text("hi");
+        ed.undo(&theme());
+        assert_eq!(ed.tab().buffer.to_string(), "");
+    }
+
+    #[test]
+    fn test_editor_redo_reapplies_insert() {
+        let mut ed = editor_with_text("hi");
+        ed.undo(&theme());
+        ed.redo(&theme());
+        assert_eq!(ed.tab().buffer.to_string(), "hi");
+    }
+
+    #[test]
+    fn test_editor_go_to_line() {
+        let mut ed = editor_with_text("line1\nline2\nline3");
+        ed.go_to_line(2, 80, 24);
+        assert_eq!(ed.tab().cursor.line, 1);
+        assert_eq!(ed.tab().cursor.char_col, 0);
+    }
+}
+
 fn is_word_char(c: char) -> bool { c.is_alphanumeric() || c == '_' }
 
 fn word_boundary_left(rope: &ropey::Rope, char_idx: usize) -> usize {

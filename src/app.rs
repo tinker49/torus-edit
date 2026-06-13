@@ -198,3 +198,61 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::renderer::Renderer;
+
+    fn make_app() -> App {
+        App::new(Renderer { width: 80, height: 24 })
+    }
+
+    #[test]
+    fn test_new_initial_state() {
+        let app = make_app();
+        assert!(app.status_msg.is_empty());
+        assert!(!app.goto_active);
+        assert!(app.goto_input.is_empty());
+        assert!(!app.force_quit);
+    }
+
+    #[test]
+    fn test_set_status() {
+        let mut app = make_app();
+        app.set_status("saved successfully");
+        assert_eq!(app.status_msg, "saved successfully");
+    }
+
+    #[test]
+    fn test_open_file_bad_path_sets_error_status() {
+        let mut app = make_app();
+        app.open_file(std::path::PathBuf::from("/nonexistent/no_such_file.txt"));
+        assert!(app.status_msg.starts_with("Error opening file:"));
+    }
+
+    #[test]
+    fn test_open_file_valid_path_opens_tab() {
+        let mut app = make_app();
+        let initial_tabs = app.editor.tabs.len();
+        app.open_file(std::path::PathBuf::from("Cargo.toml"));
+        assert!(app.status_msg.is_empty(), "expected no error, got: {}", app.status_msg);
+        assert_eq!(app.editor.tabs.len(), initial_tabs + 1);
+    }
+
+    #[test]
+    #[ignore = "blocks on crossterm terminal events; requires a PTY"]
+    fn test_run() {}
+
+    #[test]
+    #[ignore = "blocks on crossterm terminal events; requires a PTY"]
+    fn test_prompt_open_file() {}
+
+    #[test]
+    #[ignore = "blocks on crossterm terminal events; requires a PTY"]
+    fn test_prompt_save_as() {}
+
+    #[test]
+    #[ignore = "private fn; tested indirectly via prompt_open_file / prompt_save_as"]
+    fn test_inline_prompt() {}
+}

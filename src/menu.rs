@@ -166,3 +166,140 @@ impl MenuBar {
         x
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_starts_closed() {
+        let mb = MenuBar::new();
+        assert!(!mb.is_open());
+        assert_eq!(mb.selected, 0);
+        assert!(!mb.menus.is_empty());
+    }
+
+    #[test]
+    fn test_open_by_key_known_opens_correct_menu() {
+        let mut mb = MenuBar::new();
+        assert!(mb.open_by_key('f'));
+        assert_eq!(mb.open, Some(0));
+        assert_eq!(mb.selected, 0);
+    }
+
+    #[test]
+    fn test_open_by_key_unknown_returns_false() {
+        let mut mb = MenuBar::new();
+        assert!(!mb.open_by_key('z'));
+        assert!(!mb.is_open());
+    }
+
+    #[test]
+    fn test_close_resets_state() {
+        let mut mb = MenuBar::new();
+        mb.open_by_key('e');
+        mb.close();
+        assert!(!mb.is_open());
+        assert_eq!(mb.selected, 0);
+    }
+
+    #[test]
+    fn test_is_open_reflects_state() {
+        let mut mb = MenuBar::new();
+        assert!(!mb.is_open());
+        mb.open_by_key('v');
+        assert!(mb.is_open());
+        mb.close();
+        assert!(!mb.is_open());
+    }
+
+    #[test]
+    fn test_move_up_wraps_to_last_item() {
+        let mut mb = MenuBar::new();
+        mb.open_by_key('f'); // File menu has 6 items
+        assert_eq!(mb.selected, 0);
+        mb.move_up();
+        assert_eq!(mb.selected, mb.menus[0].items.len() - 1);
+    }
+
+    #[test]
+    fn test_move_down_advances_selection() {
+        let mut mb = MenuBar::new();
+        mb.open_by_key('f');
+        mb.move_down();
+        assert_eq!(mb.selected, 1);
+    }
+
+    #[test]
+    fn test_move_down_wraps_to_first_item() {
+        let mut mb = MenuBar::new();
+        mb.open_by_key('f');
+        let len = mb.menus[0].items.len();
+        mb.selected = len - 1;
+        mb.move_down();
+        assert_eq!(mb.selected, 0);
+    }
+
+    #[test]
+    fn test_move_left_switches_to_previous_menu() {
+        let mut mb = MenuBar::new();
+        mb.open_by_key('e'); // Edit = index 1
+        mb.move_left();
+        assert_eq!(mb.open, Some(0)); // File
+        assert_eq!(mb.selected, 0);
+    }
+
+    #[test]
+    fn test_move_left_wraps_from_first_to_last_menu() {
+        let mut mb = MenuBar::new();
+        mb.open_by_key('f'); // File = index 0
+        mb.move_left();
+        assert_eq!(mb.open, Some(mb.menus.len() - 1));
+    }
+
+    #[test]
+    fn test_move_right_switches_to_next_menu() {
+        let mut mb = MenuBar::new();
+        mb.open_by_key('f'); // File = index 0
+        mb.move_right();
+        assert_eq!(mb.open, Some(1)); // Edit
+        assert_eq!(mb.selected, 0);
+    }
+
+    #[test]
+    fn test_move_right_wraps_from_last_to_first_menu() {
+        let mut mb = MenuBar::new();
+        mb.open_by_key('v'); // View = last menu
+        mb.move_right();
+        assert_eq!(mb.open, Some(0)); // File
+    }
+
+    #[test]
+    fn test_activate_returns_action_and_closes() {
+        let mut mb = MenuBar::new();
+        mb.open_by_key('f');
+        mb.selected = 0; // "New File"
+        let action = mb.activate();
+        assert_eq!(action, Some(MenuAction::NewFile));
+        assert!(!mb.is_open());
+    }
+
+    #[test]
+    fn test_activate_when_closed_returns_none() {
+        let mut mb = MenuBar::new();
+        assert_eq!(mb.activate(), None);
+    }
+
+    #[test]
+    fn test_menu_x_first_menu_starts_at_one() {
+        let mb = MenuBar::new();
+        assert_eq!(mb.menu_x(0), 1);
+    }
+
+    #[test]
+    fn test_menu_x_second_menu_offset() {
+        let mb = MenuBar::new();
+        // "File" = 4 chars + 2 padding → offset = 1 + 6 = 7
+        assert_eq!(mb.menu_x(1), 1 + mb.menus[0].label.len() as u16 + 2);
+    }
+}

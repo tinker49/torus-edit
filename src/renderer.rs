@@ -441,3 +441,181 @@ fn truncate(s: &str, max_chars: usize) -> String {
         s.chars().take(max_chars.saturating_sub(1)).collect::<String>() + "…"
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{app::App, menu::MenuBar, search::SearchState};
+
+    fn make_renderer() -> Renderer {
+        Renderer { width: 80, height: 24 }
+    }
+
+    fn make_app() -> App {
+        App::new(make_renderer())
+    }
+
+    fn output_contains(buf: &[u8], needle: &str) -> bool {
+        buf.windows(needle.len()).any(|w| w == needle.as_bytes())
+    }
+
+    /// Strip ANSI escape sequences so plain text can be searched.
+    fn strip_ansi(bytes: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'[') {
+                i += 2;
+                while i < bytes.len() && !bytes[i].is_ascii_alphabetic() { i += 1; }
+                if i < bytes.len() { i += 1; }
+            } else {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+        out
+    }
+
+    // ── new ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    #[ignore = "requires a real PTY for terminal::size()"]
+    fn test_new_reads_terminal_size() {}
+
+    // ── on_resize ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_on_resize_updates_dimensions() {
+        let mut r = make_renderer();
+        r.on_resize(120, 40);
+        assert_eq!(r.width, 120);
+        assert_eq!(r.height, 40);
+    }
+
+    // ── render_all ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_render_all_writes_bytes() {
+        let r   = make_renderer();
+        let mut app = make_app();
+        let mut out = Vec::new();
+        r.render_all(&mut out, &mut app).unwrap();
+        assert!(!out.is_empty());
+    }
+
+    // ── render_menu_bar ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_render_menu_bar_contains_menu_labels() {
+        let r     = make_renderer();
+        let menu  = MenuBar::new();
+        let theme = Theme::default();
+        let mut out = Vec::new();
+        r.render_menu_bar(&mut out, &menu, &theme).unwrap();
+        assert!(output_contains(&out, "File"), "menu bar should contain 'File'");
+        assert!(output_contains(&out, "Edit"), "menu bar should contain 'Edit'");
+    }
+
+    // ── render_tab_bar ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_render_tab_bar_contains_buffer_name() {
+        let r      = make_renderer();
+        let editor = Editor::new();
+        let theme  = Theme::default();
+        let mut out = Vec::new();
+        r.render_tab_bar(&mut out, &editor, &theme).unwrap();
+        // New untitled buffer is named "[No Name]"
+        assert!(output_contains(&out, "[No Name]"));
+    }
+
+    // ── render_editor ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_render_editor_writes_text_content() {
+        let r      = make_renderer();
+        let theme  = Theme::default();
+        let mut app = make_app();
+        let t = app.theme.clone();
+        for c in "hello".chars() { app.editor.insert_char(c, &t); }
+        let mut out = Vec::new();
+        r.render_editor(&mut out, &app.editor, &app.search, &theme).unwrap();
+        // crossterm emits color codes between each character, so strip before searching
+        let plain = strip_ansi(&out);
+        assert!(output_contains(&plain, "hello"), "rendered editor should contain buffer text");
+    }
+
+    // ── render_status ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_render_status_contains_cursor_position() {
+        let r   = make_renderer();
+        let mut app = make_app();
+        let mut out = Vec::new();
+        r.render_status(&mut out, &app).unwrap();
+        // Default cursor is Ln 1, Col 1
+        assert!(output_contains(&out, "Ln 1"), "status bar should show line number");
+    }
+
+    #[test]
+    fn test_render_status_shows_transient_message() {
+        let r   = make_renderer();
+        let mut app = make_app();
+        app.set_status("File saved!");
+        let mut out = Vec::new();
+        r.render_status(&mut out, &app).unwrap();
+        assert!(output_contains(&out, "File saved!"));
+    }
+
+    // ── render_cursor ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_render_cursor_writes_bytes() {
+        let r   = make_renderer();
+        let mut app = make_app();
+        let mut out = Vec::new();
+        r.render_cursor(&mut out, &app).unwrap();
+        assert!(!out.is_empty());
+    }
+
+    #[test]
+    fn test_render_cursor_hides_when_menu_open() {
+        let r   = make_renderer();
+        let mut app = make_app();
+        app.menu.open_by_key('f');
+        let mut out = Vec::new();
+        r.render_cursor(&mut out, &app).unwrap();
+        // When menu is open, render_cursor calls cursor::Hide and returns early.
+        // The Hide command emits ESC [ ? 25 l — check for the escape byte.
+        assert!(out.contains(&0x1b), "should emit escape sequence when hiding cursor");
+    }
+
+    // ── tab_width ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_tab_width_at_column_zero_is_four() {
+        assert_eq!(tab_width(0), 4);
+    }
+
+    #[test]
+    fn test_tab_width_fills_to_next_tab_stop() {
+        assert_eq!(tab_width(1), 3);
+        assert_eq!(tab_width(2), 2);
+        assert_eq!(tab_width(3), 1);
+        assert_eq!(tab_width(4), 4); // next stop
+    }
+
+    // ── truncate ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_truncate_short_string_unchanged() {
+        assert_eq!(truncate("hi", 10), "hi");
+    }
+
+    #[test]
+    fn test_truncate_long_string_gets_ellipsis() {
+        let result = truncate("hello world", 6);
+        assert!(result.ends_with('…'), "should end with ellipsis");
+        assert!(result.chars().count() <= 6);
+    }
+}

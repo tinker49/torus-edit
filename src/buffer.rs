@@ -168,16 +168,18 @@ impl Buffer {
 
         for op in &group {
             match op {
+                // undo stored Insert (it re-inserted during undo of a Delete) → redo re-deletes
                 EditOp::Insert { char_idx, text } => {
-                    self.rope.insert(*char_idx, text);
-                    undo_group.push(EditOp::Delete { char_idx: *char_idx, text: text.clone() });
-                    cursor_char = Some(*char_idx + text.chars().count());
-                }
-                EditOp::Delete { char_idx, text } => {
                     let count = text.chars().count();
                     self.rope.remove(*char_idx..*char_idx + count);
-                    undo_group.push(EditOp::Insert { char_idx: *char_idx, text: text.clone() });
+                    undo_group.push(EditOp::Delete { char_idx: *char_idx, text: text.clone() });
                     cursor_char = Some(*char_idx);
+                }
+                // undo stored Delete (it deleted during undo of an Insert) → redo re-inserts
+                EditOp::Delete { char_idx, text } => {
+                    self.rope.insert(*char_idx, text);
+                    undo_group.push(EditOp::Insert { char_idx: *char_idx, text: text.clone() });
+                    cursor_char = Some(*char_idx + text.chars().count());
                 }
             }
         }
@@ -225,6 +227,170 @@ impl Buffer {
 
     /// Clone the full text as a `String` (needed by tree-sitter and search).
     pub fn to_string(&self) -> String { self.rope.to_string() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_empty_buffer() {
+        let buf = Buffer::new();
+        assert_eq!(buf.len_chars(), 0);
+        assert!(!buf.is_dirty);
+        assert!(buf.path.is_none());
+        assert!(buf.language.is_none());
+    }
+
+    #[test]
+    fn test_from_path_valid() {
+        let buf = Buffer::from_path(PathBuf::from("Cargo.toml")).unwrap();
+        assert!(buf.len_chars() > 0);
+        assert!(!buf.is_dirty);
+        assert_eq!(buf.language.as_deref(), Some("toml"));
+    }
+
+    #[test]
+    fn test_from_path_invalid() {
+        let result = Buffer::from_path(PathBuf::from("/no/such/file.rs"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_name_no_path() {
+        let buf = Buffer::new();
+        assert_eq!(buf.name(), "[No Name]");
+    }
+
+    #[test]
+    fn test_name_with_path() {
+        let mut buf = Buffer::new();
+        buf.path = Some(PathBuf::from("/tmp/hello.rs"));
+        assert_eq!(buf.name(), "hello.rs");
+    }
+
+    #[test]
+    fn test_insert_str() {
+        let mut buf = Buffer::new();
+        buf.insert_str(0, "hello");
+        assert_eq!(buf.to_string(), "hello");
+        assert!(buf.is_dirty);
+    }
+
+    #[test]
+    fn test_delete_range() {
+        let mut buf = Buffer::new();
+        buf.insert_str(0, "hello world");
+        buf.delete_range(5, 6);
+        assert_eq!(buf.to_string(), "hello");
+    }
+
+    #[test]
+    fn test_delete_range_zero_count_is_noop() {
+        let mut buf = Buffer::new();
+        buf.insert_str(0, "abc");
+        buf.delete_range(1, 0);
+        assert_eq!(buf.to_string(), "abc");
+    }
+
+    #[test]
+    fn test_replace_all_content() {
+        let mut buf = Buffer::new();
+        buf.insert_str(0, "old");
+        buf.replace_all_content("new content");
+        assert_eq!(buf.to_string(), "new content");
+        assert!(buf.is_dirty);
+    }
+
+    #[test]
+    fn test_checkpoint_flushes_pending() {
+        let mut buf = Buffer::new();
+        buf.insert_str(0, "hi");
+        assert_eq!(buf.pending_group.len(), 1);
+        buf.checkpoint();
+        assert_eq!(buf.pending_group.len(), 0);
+        assert_eq!(buf.undo_stack.len(), 1);
+    }
+
+    #[test]
+    fn test_undo_reverses_insert() {
+        let mut buf = Buffer::new();
+        buf.insert_str(0, "hello");
+        buf.checkpoint();
+        let cursor = buf.undo();
+        assert_eq!(buf.to_string(), "");
+        assert_eq!(cursor, Some(0));
+    }
+
+    #[test]
+    fn test_redo_reapplies_insert() {
+        let mut buf = Buffer::new();
+        buf.insert_str(0, "hello");
+        buf.checkpoint();
+        buf.undo();
+        let cursor = buf.redo();
+        assert_eq!(buf.to_string(), "hello");
+        assert_eq!(cursor, Some(5));
+    }
+
+    #[test]
+    fn test_save_no_path_returns_error() {
+        let mut buf = Buffer::new();
+        assert!(buf.save().is_err());
+    }
+
+    #[test]
+    fn test_save_as_writes_file() {
+        let mut buf = Buffer::new();
+        buf.insert_str(0, "content");
+        let path = std::env::temp_dir().join("torus_test_save_as.txt");
+        buf.save_as(path.clone()).unwrap();
+        assert!(!buf.is_dirty);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "content");
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn test_len_chars() {
+        let mut buf = Buffer::new();
+        buf.insert_str(0, "abc");
+        assert_eq!(buf.len_chars(), 3);
+    }
+
+    #[test]
+    fn test_len_lines() {
+        let mut buf = Buffer::new();
+        buf.insert_str(0, "a\nb\nc");
+        assert_eq!(buf.len_lines(), 3);
+    }
+
+    #[test]
+    fn test_char_to_line() {
+        let mut buf = Buffer::new();
+        buf.insert_str(0, "abc\ndef");
+        assert_eq!(buf.char_to_line(5), 1);
+    }
+
+    #[test]
+    fn test_line_to_char() {
+        let mut buf = Buffer::new();
+        buf.insert_str(0, "abc\ndef");
+        assert_eq!(buf.line_to_char(1), 4);
+    }
+
+    #[test]
+    fn test_line_len_chars_excludes_newline() {
+        let mut buf = Buffer::new();
+        buf.insert_str(0, "hello\nworld");
+        assert_eq!(buf.line_len_chars(0), 5);
+    }
+
+    #[test]
+    fn test_to_string() {
+        let mut buf = Buffer::new();
+        buf.insert_str(0, "hello");
+        assert_eq!(buf.to_string(), "hello");
+    }
 }
 
 // ── Language detection ────────────────────────────────────────────────────────

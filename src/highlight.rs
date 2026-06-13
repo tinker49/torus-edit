@@ -307,3 +307,62 @@ fn toml_color(kind: &str, t: &Theme) -> Option<Color> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn theme() -> Theme { Theme::default() }
+
+    #[test]
+    fn test_new_has_no_spans_or_language() {
+        let h = Highlighter::new();
+        assert!(h.spans.is_empty());
+    }
+
+    #[test]
+    fn test_set_language_known_returns_true() {
+        let mut h = Highlighter::new();
+        assert!(h.set_language("rust"));
+    }
+
+    #[test]
+    fn test_set_language_unknown_returns_false() {
+        let mut h = Highlighter::new();
+        assert!(!h.set_language("brainfuck"));
+    }
+
+    #[test]
+    fn test_parse_populates_spans_for_rust() {
+        let mut h = Highlighter::new();
+        h.set_language("rust");
+        h.parse("fn main() {}", &theme());
+        assert!(!h.spans.is_empty(), "parse should produce spans for Rust code");
+    }
+
+    #[test]
+    fn test_reparse_updates_spans() {
+        let mut h = Highlighter::new();
+        h.set_language("rust");
+        h.parse("fn main() {}", &theme());
+        let count_before = h.spans.len();
+        h.reparse("fn main() { let x = 1; }", &theme());
+        let count_after = h.spans.len();
+        assert!(count_after >= count_before, "reparse should produce at least as many spans for longer code");
+    }
+
+    #[test]
+    fn test_color_at_returns_color_inside_span() {
+        let mut h = Highlighter::new();
+        h.set_language("rust");
+        h.parse("fn main() {}", &theme());
+        // "fn" starts at byte 0; byte 0 should map to syn_keyword
+        assert!(h.color_at(0).is_some(), "byte 0 of 'fn' should have a color");
+    }
+
+    #[test]
+    fn test_color_at_returns_none_when_no_spans() {
+        let h = Highlighter::new();
+        assert!(h.color_at(0).is_none());
+    }
+}
