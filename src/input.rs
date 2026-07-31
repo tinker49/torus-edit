@@ -1,6 +1,7 @@
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use crate::{
     app::{App, AppCommand},
+    config::MENU_HEIGHT,
     editor::Direction,
     menu::MenuAction,
     search::SearchFocus,
@@ -11,6 +12,7 @@ use crate::{
 pub fn handle_event(event: Event, app: &mut App) -> Option<AppCommand> {
     match event {
         Event::Key(key)       => handle_key(key, app),
+        Event::Mouse(mouse)   => handle_mouse(mouse, app),
         Event::Resize(w, h)   => { app.renderer.on_resize(w, h); None }
         _                     => None,
     }
@@ -134,6 +136,51 @@ fn handle_key(key: KeyEvent, app: &mut App) -> Option<AppCommand> {
         KeyCode::PageDown  => app.editor.move_cursor(Direction::PageDown,  w, h),
         KeyCode::Esc       => { app.status_msg.clear(); }
         _ => {}
+    }
+
+    None
+}
+
+// ── Mouse handler ─────────────────────────────────────────────────────────────
+
+fn handle_mouse(mouse: MouseEvent, app: &mut App) -> Option<AppCommand> {
+    if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+        return None;
+    }
+    let col = mouse.column;
+    let row = mouse.row;
+
+    // Click on the menu bar row.
+    if row == 0 {
+        let clicked = (0..app.menu.menus.len()).find(|&i| {
+            let x = app.menu.menu_x(i);
+            let w = app.menu.menus[i].label.len() as u16 + 2;
+            col >= x && col < x + w
+        });
+        match clicked {
+            Some(i) if app.menu.open == Some(i) => app.menu.close(),
+            Some(i) => { app.menu.open = Some(i); app.menu.selected = 0; }
+            None    => app.menu.close(),
+        }
+        return None;
+    }
+
+    // Click inside an open dropdown.
+    if let Some(mi) = app.menu.open {
+        let menu_col   = app.menu.menu_x(mi);
+        const DW: u16  = 32;
+        let items_len  = app.menu.menus[mi].items.len() as u16;
+
+        if row >= MENU_HEIGHT && row < MENU_HEIGHT + items_len
+            && col >= menu_col && col < menu_col + DW
+        {
+            app.menu.selected = (row - MENU_HEIGHT) as usize;
+            if let Some(action) = app.menu.activate() {
+                return dispatch_action(action, app);
+            }
+        } else {
+            app.menu.close();
+        }
     }
 
     None

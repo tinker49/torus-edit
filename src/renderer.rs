@@ -99,7 +99,7 @@ impl Renderer {
                 // label (left) + shortcut (right-aligned) within DW columns
                 let lbl_max = (DW as usize).saturating_sub(sc.len() + 3);
                 let label   = truncate(&item.label, lbl_max);
-                let gap     = DW as usize - 1 - label.len() - sc.len();
+                let gap     = DW as usize - 2 - label.len() - sc.len();
                 let row_str = format!(" {}{}{} ", label, " ".repeat(gap), sc);
                 let row_str: String = row_str.chars().take(DW as usize).collect();
 

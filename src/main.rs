@@ -11,6 +11,7 @@ mod search;
 use std::io::{self, BufWriter};
 use crossterm::{
     cursor,
+    event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -38,6 +39,7 @@ fn run(files: Vec<std::path::PathBuf>) -> std::io::Result<()> {
         let _ = execute!(
             io::stderr(),
             LeaveAlternateScreen,
+            DisableMouseCapture,
             cursor::Show
         );
         default_hook(info);
@@ -46,7 +48,7 @@ fn run(files: Vec<std::path::PathBuf>) -> std::io::Result<()> {
     // Enter alternate screen and raw mode.
     enable_raw_mode()?;
     let mut stdout = BufWriter::new(io::stdout());
-    execute!(stdout, EnterAlternateScreen, cursor::Hide)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, cursor::Hide)?;
 
     // Build renderer before the app so we know the terminal dimensions up front.
     let renderer = renderer::Renderer::new()?;
@@ -61,7 +63,7 @@ fn run(files: Vec<std::path::PathBuf>) -> std::io::Result<()> {
     let result = app.run(&mut stdout);
 
     // Restore terminal regardless of whether the loop returned Ok or Err.
-    let _ = execute!(stdout, LeaveAlternateScreen, cursor::Show);
+    let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture, cursor::Show);
     let _ = disable_raw_mode();
 
     result
