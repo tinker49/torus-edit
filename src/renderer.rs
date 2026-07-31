@@ -38,6 +38,7 @@ impl Renderer {
         self.render_tab_bar(out, &app.editor, &app.theme)?;
         self.render_editor(out, &app.editor, &app.search, &app.theme)?;
         self.render_status(out, app)?;
+        self.render_dropdown(out, &app.menu, &app.theme)?;
         self.render_cursor(out, app)?;
         out.flush()
     }
@@ -76,7 +77,17 @@ impl Renderer {
         let fill = " ".repeat(self.width.saturating_sub(x) as usize);
         out.queue(Print(fill))?;
 
-        // ── Dropdown ─────────────────────────────────────────────────────────
+        Ok(())
+    }
+
+    // ── Dropdown overlay ──────────────────────────────────────────────────────
+
+    fn render_dropdown(
+        &self,
+        out:   &mut impl Write,
+        menu:  &MenuBar,
+        theme: &Theme,
+    ) -> std::io::Result<()> {
         if let Some(mi) = menu.open {
             let m          = &menu.menus[mi];
             let menu_col   = menu.menu_x(mi);
@@ -603,6 +614,70 @@ mod tests {
         assert_eq!(tab_width(2), 2);
         assert_eq!(tab_width(3), 1);
         assert_eq!(tab_width(4), 4); // next stop
+    }
+
+    // ── render_dropdown ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_render_dropdown_empty_when_closed() {
+        let r     = make_renderer();
+        let menu  = MenuBar::new();
+        let theme = Theme::default();
+        let mut out = Vec::new();
+        r.render_dropdown(&mut out, &menu, &theme).unwrap();
+        assert!(out.is_empty(), "closed menu should produce no output");
+    }
+
+    #[test]
+    fn test_render_dropdown_shows_item_labels_when_open() {
+        let r     = make_renderer();
+        let mut menu  = MenuBar::new();
+        let theme = Theme::default();
+        menu.open_by_key('f');
+        let mut out = Vec::new();
+        r.render_dropdown(&mut out, &menu, &theme).unwrap();
+        let plain = strip_ansi(&out);
+        assert!(output_contains(&plain, "New File"), "dropdown should show 'New File'");
+        assert!(output_contains(&plain, "Save"),     "dropdown should show 'Save'");
+        assert!(output_contains(&plain, "Quit"),     "dropdown should show 'Quit'");
+    }
+
+    #[test]
+    fn test_render_dropdown_shows_shortcuts() {
+        let r     = make_renderer();
+        let mut menu  = MenuBar::new();
+        let theme = Theme::default();
+        menu.open_by_key('f');
+        let mut out = Vec::new();
+        r.render_dropdown(&mut out, &menu, &theme).unwrap();
+        let plain = strip_ansi(&out);
+        assert!(output_contains(&plain, "Ctrl+S"), "dropdown should show 'Ctrl+S' shortcut");
+    }
+
+    #[test]
+    fn test_render_dropdown_appears_after_editor_in_render_all() {
+        // Regression test: dropdown must be rendered last so the editor does not
+        // overwrite it.  Verify the item text appears after the editor content
+        // in the raw byte stream.
+        let r   = make_renderer();
+        let mut app = make_app();
+        let t = app.theme.clone();
+        for c in "hello".chars() { app.editor.insert_char(c, &t); }
+        app.menu.open_by_key('f');
+
+        let mut out = Vec::new();
+        r.render_all(&mut out, &mut app).unwrap();
+        let plain = strip_ansi(&out);
+
+        let editor_pos  = plain.windows(5).position(|w| w == b"hello")
+            .expect("editor text 'hello' not found in output");
+        let dropdown_pos = plain.windows(8).position(|w| w == b"New File")
+            .expect("dropdown item 'New File' not found in output");
+
+        assert!(
+            dropdown_pos > editor_pos,
+            "dropdown (pos {dropdown_pos}) must be rendered after editor content (pos {editor_pos})"
+        );
     }
 
     // ── truncate ─────────────────────────────────────────────────────────────
